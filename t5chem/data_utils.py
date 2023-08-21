@@ -35,7 +35,7 @@ class LineByLineTextDataset(Dataset):
         tokenizer: PreTrainedTokenizer, 
         file_path: str, 
         block_size: int, 
-        prefix: str = ''
+        prefix: str = '',
     ) -> None:
         assert os.path.isfile(file_path), f"Input file path {file_path} not found"
         
@@ -70,6 +70,7 @@ class TaskPrefixDataset(Dataset):
         max_source_length: int=300,
         max_target_length: int=100,
         separate_vocab: bool=False,
+        with_weights: bool = False
     ) -> None:
         super().__init__()
 
@@ -83,11 +84,13 @@ class TaskPrefixDataset(Dataset):
         self.max_source_len: int = max_source_length
         self.max_target_len: int = max_target_length
         self.sep_vocab: bool = separate_vocab
+        self.with_weights: bool = with_weights 
 
     def __len__(self) -> int:
         return self._len_source
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        #import pdb; pdb.set_trace()
         source_line: str = linecache.getline(self._source_path, idx + 1).strip()
         source_sample: BatchEncoding = self.tokenizer(
                         self.prefix+source_line,
@@ -97,27 +100,53 @@ class TaskPrefixDataset(Dataset):
                         return_tensors='pt',
                     )
         target_line: str = linecache.getline(self._target_path, idx + 1).strip()
-        if self.sep_vocab:
-            try:
-                target_value: float = float(target_line)
-                target_ids: torch.Tensor = torch.Tensor([target_value])
-            except TypeError:
-                print("The target should be a number, \
-                        not {}".format(target_line))
-                raise AssertionError
+        if not self.with_weights:
+            if self.sep_vocab:
+                try:
+                    target_value: float = float(target_line)
+                    target_ids: torch.Tensor = torch.Tensor([target_value])
+                except TypeError:
+                    print("The target should be a number, \
+                            not {}".format(target_line))
+                    raise AssertionError
+            else:
+                target_sample: BatchEncoding = self.tokenizer(
+                                target_line,
+                                max_length=self.max_target_len,
+                                padding="do_not_pad",
+                                truncation=True,
+                                return_tensors='pt',
+                            )
+                target_ids = target_sample["input_ids"].squeeze(0)
         else:
-            target_sample: BatchEncoding = self.tokenizer(
-                            target_line,
-                            max_length=self.max_target_len,
-                            padding="do_not_pad",
-                            truncation=True,
-                            return_tensors='pt',
-                        )
-            target_ids = target_sample["input_ids"].squeeze(0)
+            target_line, weight = target_line.split(',')
+            weight = float(weight)
+            target_line = target_line.strip()
+            if self.sep_vocab:
+                try:
+                    target_value: float = float(target_line)
+                    target_ids: torch.Tensor = torch.Tensor([target_value])
+                except TypeError:
+                    print("The target should be a number, \
+                            not {}".format(target_line))
+                    raise AssertionError
+            else:
+                target_sample: BatchEncoding = self.tokenizer(
+                                target_line,
+                                max_length=self.max_target_len,
+                                padding="do_not_pad",
+                                truncation=True,
+                                return_tensors='pt',
+                            )
+                target_ids = target_sample["input_ids"].squeeze(0)
         source_ids: torch.Tensor = source_sample["input_ids"].squeeze(0)
         src_mask: torch.Tensor = source_sample["attention_mask"].squeeze(0)
-        return {"input_ids": source_ids, "attention_mask": src_mask,
-                "decoder_input_ids": target_ids}
+        if not self.with_weights:
+            return {"input_ids": source_ids, "attention_mask": src_mask,
+                    "decoder_input_ids": target_ids, 'source_line': source_line}
+        else:
+            return {"input_ids": source_ids, "attention_mask": src_mask,
+                    "decoder_input_ids": target_ids, 'source_line': source_line, 'weight': weight}
 
     def sort_key(self, ex: BatchEncoding) -> int:
         """ Sort using length of source sentences. """
@@ -127,7 +156,13 @@ class TaskPrefixDataset(Dataset):
 def data_collator(batch: List[BatchEncoding], pad_token_id: int) -> Dict[str, torch.Tensor]:
     whole_batch: Dict[str, torch.Tensor] = {}
     ex: BatchEncoding = batch[0]
+    weights = None
     for key in ex.keys():
+        if key == 'source_line':
+            continue
+        if key == 'weight':
+            weights = torch.Tensor([x[key] for x in batch])
+            continue
         if 'mask' in key:
             padding_value = 0
         else:
@@ -137,8 +172,13 @@ def data_collator(batch: List[BatchEncoding], pad_token_id: int) -> Dict[str, to
                                         padding_value=padding_value)
     source_ids, source_mask, y = \
         whole_batch["input_ids"], whole_batch["attention_mask"], whole_batch["decoder_input_ids"]
-    return {'input_ids': source_ids, 'attention_mask': source_mask,
-            'labels': y}
+    #import pdb; pdb.set_trace()
+    if weights is None:
+        return {'input_ids': source_ids, 'attention_mask': source_mask,
+                'labels': y}
+    else:
+        return {'input_ids': source_ids, 'attention_mask': source_mask,
+                'labels': y, 'weights': weights}
 
 
 def CalMSELoss(model_output: PredictionOutput) -> Dict[str, float]:

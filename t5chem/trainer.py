@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 
 import torch
 from torch.utils.data import DataLoader, Dataset
+from torch.nn import CrossEntropyLoss
 from transformers import Trainer
 from transformers.trainer_pt_utils import (DistributedTensorGatherer,
                                            nested_concat)
@@ -15,9 +16,86 @@ class EarlyStopTrainer(Trainer):
     """
     Save model weights based on validation error.
     """
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, with_weights=0, mle_weight=0, **kwargs) -> None:
+        self.mle_weight = mle_weight
+        self.with_weights = with_weights
         super().__init__(**kwargs)
         self.min_eval_loss: float = float('inf')
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """
+        How the loss is computed by Trainer. By default, all models return the loss in the first element.
+
+        Subclass and override for custom behavior.
+        """
+        #import pdb; pdb.set_trace()
+        if self.label_smoother is not None and "labels" in inputs:
+            labels = inputs.pop("labels")
+        else:
+            labels = None
+
+        if 'weights' in inputs:
+            weights = inputs.pop('weights')
+            labels = inputs['labels'] #TODO: pop
+            outputs = model(**inputs)
+
+            lm_logits = outputs['logits']
+
+            loss_fct = CrossEntropyLoss(ignore_index=-100, reduction='none')
+            K = labels.shape[-1]
+            loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+            #import pdb; pdb.set_trace()
+
+            loss = loss.view(-1, K)
+            loss_orig = loss.clone()
+            if self.with_weights == 1 or self.with_weights == 3 or self.with_weights == 4:
+                loss = loss * weights.view(-1, 1)
+            if self.with_weights == 2 or self.with_weights == 3:
+                #import pdb; pdb.set_trace()
+                p_pred = (loss_orig * labels.gt(0))
+                p_pred = p_pred.sum(-1)
+                lg_weights = weights.log()
+                weight_mask = weights.gt(0)
+                lg_weights.data.masked_fill_(~weight_mask, 0)
+                mle_loss = (p_pred + lg_weights) * (p_pred + lg_weights)
+                #mle_loss.data.masked_fill_(~weight_mask, 0)
+                mle_loss = (mle_loss[weight_mask].sum()) / weight_mask.float().sum()
+                #mle_loss = mle_loss.mean()
+                print (mle_loss.item())
+            if self.with_weights == 4:
+                #import pdb; pdb.set_trace()
+                p_pred = (loss_orig * labels.gt(0))
+                p_pred = -p_pred.sum(-1)
+                p_pred = p_pred.exp()
+                #lg_weights = weights.log()
+                mle_loss = (p_pred - weights) * (p_pred - weights)
+                #weight_mask = weights.gt(0)
+                #mle_loss = (mle_loss[weight_mask].sum()) / weight_mask.float().sum()
+                mle_loss = mle_loss.mean()
+                print (mle_loss.item())
+            loss = loss.mean()
+            if self.with_weights == 2 or self.with_weights == 3:
+                loss = loss + mle_loss * self.mle_weight
+
+            outputs['loss'] = loss
+
+            labels = None
+        else:
+            #assert False
+            outputs = model(**inputs)
+
+        # Save past state if it exists
+        # TODO: this needs to be fixed and made cleaner later.
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        if labels is not None:
+            loss = self.label_smoother(outputs, labels)
+        else:
+            # We don't use .loss here since the model may return tuples instead of ModelOutput.
+            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+
+        return (loss, outputs) if return_outputs else loss
 
     def evaluate(
         self,

@@ -1,5 +1,6 @@
 import argparse
 import logging
+import sys
 import os
 import random
 from functools import partial
@@ -7,16 +8,18 @@ from typing import Dict
 
 import numpy as np
 import torch
-from transformers import (DataCollatorForLanguageModeling, T5Config,
+from transformers import (DataCollatorForLanguageModeling, T5Config, AutoTokenizer,
                           T5ForConditionalGeneration, TrainingArguments)
 
-from .data_utils import (AccuracyMetrics, CalMSELoss, LineByLineTextDataset,
+from data_utils import (AccuracyMetrics, CalMSELoss, LineByLineTextDataset,
                         T5ChemTasks, TaskPrefixDataset, TaskSettings,
                         data_collator)
-from .model import T5ForProperty
-from .mol_tokenizers import (AtomTokenizer, MolTokenizer, SelfiesTokenizer,
+
+sys.path.insert(0, '%s'%os.path.join(os.path.dirname(__file__), './'))
+from model import T5ForProperty
+from mol_tokenizers import (AtomTokenizer, MolTokenizer, SelfiesTokenizer,
                             SimpleTokenizer)
-from .trainer import EarlyStopTrainer
+from trainer import EarlyStopTrainer
 
 tokenizer_map: Dict[str, MolTokenizer] = {
     'simple': SimpleTokenizer,  # type: ignore
@@ -30,6 +33,12 @@ def add_args(parser):
         "--data_dir",
         type=str,
         required=True,
+        help="The input data dir. Should contain train.source, train.target, val.source, val.target, test.source, test.target",
+    )
+    parser.add_argument(
+        "--with_weights",
+        type=int,
+        default=0,
         help="The input data dir. Should contain train.source, train.target, val.source, val.target, test.source, test.target",
     )
     parser.add_argument(
@@ -51,6 +60,12 @@ def add_args(parser):
         help="Path to a pretrained model. If not given, we will train from scratch",
     )
     parser.add_argument(
+        "--mle_weight",
+        type=float,
+        default=0,
+        help="Path to a pretrained model. If not given, we will train from scratch",
+    )
+    parser.add_argument(
         "--vocab",
         default='',
         help="Vocabulary file to load.",
@@ -59,6 +74,12 @@ def add_args(parser):
         "--tokenizer",
         default='',
         help="Tokenizer to use. ('simple', 'atom', 'selfies')",
+    )
+    parser.add_argument(
+        "--from_scratch",
+        default=0,
+        type=int,
+        help="1: from scratch, 0: not from scratch (using pretrained)",
     )
     parser.add_argument(
         "--random_seed",
@@ -97,6 +118,9 @@ def add_args(parser):
     )
 
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 def train(args):
     print(args)
     torch.cuda.manual_seed(args.random_seed)
@@ -117,24 +141,34 @@ def train(args):
     if args.pretrain: # retrieve information from pretrained model
         if task.output_layer == 'seq2seq':
             model = T5ForConditionalGeneration.from_pretrained(args.pretrain)
+            if args.from_scratch == 1:
+                #import pdb; pdb.set_trace()
+                print ('WARNING: re-initializing model weights and training from scratch')
+                model.apply(model._init_weights)
         else:
             model = T5ForProperty.from_pretrained(
                 args.pretrain, 
                 head_type = task.output_layer,
             )
-        if not hasattr(model.config, 'tokenizer'):
-            logging.warning("No tokenizer type detected, will use SimpleTokenizer as default")
-        tokenizer_type = getattr(model.config, "tokenizer", 'simple')
-        vocab_path = os.path.join(args.pretrain, 'vocab.pt')
-        if not os.path.isfile(vocab_path):
-            vocab_path = args.vocab
-            if not vocab_path:
-                raise ValueError(
-                        "Can't find a vocabulary file at path '{}'.".format(args.pretrain)
-                    )
-        tokenizer = tokenizer_map[tokenizer_type](vocab_file=vocab_path)
-        model.config.tokenizer = tokenizer_type # type: ignore
-        model.config.task_type = args.task_type # type: ignore
+        total_parameters = count_parameters(model)
+        print (f'Number of trainable parameters: {total_parameters}')
+        #if not hasattr(model.config, 'tokenizer'):
+        #    logging.warning("No tokenizer type detected, will use SimpleTokenizer as default")
+        #tokenizer_type = getattr(model.config, "tokenizer", 'simple')
+        #vocab_path = os.path.join(args.pretrain, 'vocab.pt')
+        #if not os.path.isfile(vocab_path):
+        #    vocab_path = args.vocab
+        #    if not vocab_path:
+        #        raise ValueError(
+        #                "Can't find a vocabulary file at path '{}'.".format(args.pretrain)
+        #            )
+        #tokenizer = tokenizer_map[tokenizer_type](vocab_file=vocab_path)
+        #model.config.tokenizer = tokenizer_type # type: ignore
+        #model.config.task_type = args.task_type # type: ignore
+        if 'models/pretrain/simple' in args.pretrain:
+            tokenizer = SimpleTokenizer(vocab_file=os.path.join(args.pretrain, 'vocab.pt'))
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(args.pretrain)
     else:
         if not args.tokenizer:
             warn_msg = "This model is trained from scratch, but no \
@@ -164,7 +198,7 @@ def train(args):
             model = T5ForProperty(config, head_type=task.output_layer, num_classes=args.num_classes)
 
     os.makedirs(args.output_dir, exist_ok=True)
-    tokenizer.save_vocabulary(os.path.join(args.output_dir, 'vocab.pt'))
+    #tokenizer.save_vocabulary(os.path.join(args.output_dir, 'vocab.pt'))
     if args.task_type == 'pretrain':
         dataset = LineByLineTextDataset(
             tokenizer=tokenizer, 
@@ -183,11 +217,13 @@ def train(args):
             max_source_length=task.max_source_length,
             max_target_length=task.max_target_length,
             separate_vocab=(task.output_layer != 'seq2seq'),
+            with_weights=args.with_weights>0,
             type_path="train",
         )
         data_collator_padded = partial(
             data_collator, pad_token_id=tokenizer.pad_token_id)
 
+    #import pdb; pdb.set_trace()
     if args.task_type == 'pretrain':
         do_eval = os.path.exists(os.path.join(args.data_dir, 'val.txt'))
         if do_eval:
@@ -213,10 +249,15 @@ def train(args):
                 max_target_length=task.max_target_length,
                 separate_vocab=(task.output_layer != 'seq2seq'),
                 type_path="val",
+                with_weights=args.with_weights>0,
             )
         else:
             eval_strategy = "no"
             eval_iter = None
+    
+    print(do_eval)
+    eval_strategy = 'epoch'
+    #import pdb; pdb.set_trace()
 
     if task.output_layer == 'regression':
         compute_metrics = CalMSELoss
@@ -233,10 +274,13 @@ def train(args):
         evaluation_strategy=eval_strategy,
         num_train_epochs=args.num_epoch,
         per_device_train_batch_size=args.batch_size,
-        logging_steps=args.log_step,
+        #logging_steps=args.log_step,
+        load_best_model_at_end=True,
         per_device_eval_batch_size=args.batch_size,
         save_steps=10000,
-        save_total_limit=5,
+        logging_strategy='epoch',
+        save_total_limit=2,
+        save_strategy='epoch',
         learning_rate=args.init_lr,
         prediction_loss_only=(compute_metrics is None),
     )
@@ -248,9 +292,12 @@ def train(args):
         train_dataset=dataset,
         eval_dataset=eval_iter,
         compute_metrics=compute_metrics,
+        mle_weight=args.mle_weight,
+        with_weights=args.with_weights,
     )
 
     trainer.train()
+    print(do_eval)
     print(args)
     print("logging dir: {}".format(training_args.logging_dir))
     trainer.save_model(args.output_dir)

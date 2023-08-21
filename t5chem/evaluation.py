@@ -40,6 +40,8 @@ def get_rank(row, base, max_rank):
     return 0
 
 def standize(smiles):
+    #assert False, 'standize called'
+    print ('warning: standize')
     try:
         return Chem.CanonSmiles(smiles)
     except:

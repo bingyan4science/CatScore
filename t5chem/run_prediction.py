@@ -9,12 +9,12 @@ import torch
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from torch.utils.data.dataloader import DataLoader
 from tqdm.auto import tqdm
-from transformers import T5Config, T5ForConditionalGeneration
+from transformers import T5Config, T5ForConditionalGeneration, AutoTokenizer
 
-from .data_utils import T5ChemTasks, TaskPrefixDataset, data_collator
-from .evaluation import get_rank, standize
-from .model import T5ForProperty
-from .mol_tokenizers import AtomTokenizer, SelfiesTokenizer, SimpleTokenizer
+from data_utils import T5ChemTasks, TaskPrefixDataset, data_collator
+from evaluation import get_rank, standize
+from model import T5ForProperty
+from mol_tokenizers import AtomTokenizer, SelfiesTokenizer, SimpleTokenizer
 
 
 def add_args(parser):
@@ -44,6 +44,12 @@ def add_args(parser):
             dataset, but want to test on seperate tasks)",
     )
     parser.add_argument(
+        "--output_logits",
+        default=0,
+        type=int,
+        help="When set to 1, output logits",
+    )
+    parser.add_argument(
         "--num_beams",
         default=10,
         type=int,
@@ -61,6 +67,12 @@ def add_args(parser):
         type=int,
         help="Batch size for training and validation.",
     )
+    parser.add_argument(
+        "--task_type",
+        required=True,
+        choices=['product', 'classification'],
+        help="Batch size for training and validation.",
+    )
 
 
 def predict(args):
@@ -70,16 +82,19 @@ def predict(args):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     config = T5Config.from_pretrained(args.model_dir)
+    config.task_type = args.task_type
+   # import pdb; pdb.set_trace()
     task = T5ChemTasks[config.task_type]
-    tokenizer_type = getattr(config, "tokenizer")
-    if tokenizer_type == "simple":
-        Tokenizer = SimpleTokenizer
-    elif tokenizer_type == 'atom':
-        Tokenizer = AtomTokenizer
-    else:
-        Tokenizer = SelfiesTokenizer
+    #tokenizer_type = getattr(config, "tokenizer")
+    #if tokenizer_type == "simple":
+    #    Tokenizer = SimpleTokenizer
+    #elif tokenizer_type == 'atom':
+    #    Tokenizer = AtomTokenizer
+    #else:
+    #    Tokenizer = SelfiesTokenizer
 
-    tokenizer = Tokenizer(vocab_file=os.path.join(args.model_dir, 'vocab.pt'))
+    #tokenizer = Tokenizer(vocab_file=os.path.join(args.model_dir, 'vocab.pt'))
+    tokenizer = AutoTokenizer.from_pretrained('Salesforce/codet5-small')
 
     if os.path.isfile(args.data_dir):
         args.data_dir, base = os.path.split(args.data_dir)
@@ -101,6 +116,9 @@ def predict(args):
     )
 
     targets = []
+    #import pdb; pdb.set_trace()
+    max_num_batches = 10000
+    num_batch = 0
     if task.output_layer == 'seq2seq':
         task_specific_params = {
             "Reaction": {
@@ -120,9 +138,34 @@ def predict(args):
                 targets.append(standize(line.strip()[:task.max_target_length]))
     
         predictions = [[] for i in range(args.num_preds)]
+        log_likelihood_total_list = []
+        log_likelihood_avg_list = []
+        num_words_list = []
         for batch in tqdm(test_loader, desc="prediction"):
             for k, v in batch.items():
                 batch[k] = v.to(device)
+            #import pdb; pdb.set_trace()
+            if args.output_logits == 1:
+                labels = batch['labels'][:, 1:]
+                label_mask = labels.gt(0)
+
+                outputs = model(**batch)
+
+                logits = outputs.logits[:, :-1, :].log_softmax(dim=-1)
+                log_likelihood = logits.gather(-1, labels.unsqueeze(-1))
+                log_likelihood = log_likelihood.squeeze(-1)
+                log_likelihood = log_likelihood * label_mask
+                num_words = label_mask.sum(-1)
+                log_likelihood_total = log_likelihood.sum(-1)
+                log_likelihood_avg = log_likelihood_total / num_words
+
+                num_words = num_words.tolist()
+                log_likelihood_total = log_likelihood_total.tolist()
+                log_likelihood_avg = log_likelihood_avg.tolist()
+                log_likelihood_total_list.extend(log_likelihood_total)
+                log_likelihood_avg_list.extend(log_likelihood_avg)
+                num_words_list.extend(num_words)
+
             del batch['labels']
             with torch.no_grad():
                 outputs = model.generate(**batch, **task_specific_params['Reaction'])
@@ -130,6 +173,9 @@ def predict(args):
                 prod = tokenizer.decode(pred, skip_special_tokens=True,
                         clean_up_tokenization_spaces=False)
                 predictions[i % args.num_preds].append(prod)
+            num_batch += 1
+            if num_batch == max_num_batches:
+                break
 
     else:
         predictions = []
@@ -145,15 +191,25 @@ def predict(args):
                 outputs = model(**batch)
                 targets.extend(batch['labels'].view(-1).to(outputs.logits).tolist())
                 predictions.extend((outputs.logits).tolist())
+            num_batch += 1
+            if num_batch == max_num_batches:
+                break
 
     test_df = pd.DataFrame(targets, columns=['target'])
 
+    #import pdb; pdb.set_trace()
     if isinstance(predictions[0], list):
+        test_df = test_df.head(len(predictions[0]))
         for i, preds in enumerate(predictions):
             test_df['prediction_{}'.format(i + 1)] = preds
             test_df['prediction_{}'.format(i + 1)] = \
                 test_df['prediction_{}'.format(i + 1)].apply(standize)
         test_df['rank'] = test_df.apply(lambda row: get_rank(row, 'prediction_', args.num_preds), axis=1)
+        #import pdb; pdb.set_trace()
+        if args.output_logits:
+            test_df['log_likelihood_total'] = log_likelihood_total_list
+            test_df['log_likelihood_avg'] = log_likelihood_avg_list
+            test_df['num_words'] = num_words_list
 
         correct = 0
         invalid_smiles = 0
