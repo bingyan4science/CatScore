@@ -32,8 +32,9 @@ Note that we always assume the working directory to be `WORKING_DIR`:
 cd ${WORKING_DIR}
 ```
 ## Make a dirctory to save models and evaluation results
+```
 mkdir example
-
+```
 Note that your data are saved under the data directory ../data/AHO/100p_catdesign, ../data/AHO/100p_prodpred, and ../data/AHO/100p_cattest
 
 ## Train a catalyst design model and generate from it
