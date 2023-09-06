@@ -13,8 +13,9 @@ def read_smiles1_from_csv(input_csv_path):
     smiles1_list = []
     with open(input_csv_path, 'r') as csvfile:
         csv_reader = csv.reader(csvfile)
+        next(csv_reader)
         for row in csv_reader:
-            smiles1_list.append(row[0])
+            smiles1_list.append(row[1])
     return smiles1_list
 
 # Write the data to the output CSV file
@@ -60,13 +61,12 @@ def write_data_to_csv(dictionary, smiles1_list, output_csv_path):
                     ])
 
 # Specify the path to the input JSON file
-input_file_path = '/scratch/by2192/reaction_prediction/dft/data/summary/dftscore/AHO_DFT.json'
+input_file_path = 'AHO_DFT.json'
 
 # Load the dictionary from the JSON file
 dictionary = load_dictionary_from_file(input_file_path)
 
 # Specify the path to the input CSV file containing smiles1 values
-#input_csv_path = '/scratch/by2192/reaction_prediction/dft/data/summary/dftscore/target.csv'
 input_csv_path = sys.argv[1]
 
 # Read the smiles1 values from the input CSV file
@@ -74,7 +74,6 @@ smiles1_list = read_smiles1_from_csv(input_csv_path)
 
 # Specify the path to the output CSV file
 output_csv_path = str(input_csv_path[:-4]) + '_filled.csv'
-#output_csv_path = '/scratch/by2192/reaction_prediction/dft/data/summary/dftscore/target_filled.csv'
 
 # Write the data to the output CSV file
 write_data_to_csv(dictionary, smiles1_list, output_csv_path)                                                                                                                                                                                        

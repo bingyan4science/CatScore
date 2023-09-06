@@ -5,22 +5,29 @@ import sys
 from time import process_time
 
 # Start the stopwatch / counter 
-t1_start = process_time() 
+#t1_start = process_time() 
 
 # Load fitting results
 fitting_results = pd.read_csv('fitting_results_train.csv')
 
+# Load Reactant, product info
+reactant_product = pd.read_csv('reactant_product.csv')
+
 # Load prediction data
 input_file = sys.argv[1]
 print(f'DFTScore of {input_file} has been calculated')
-prediction_data = pd.read_csv(input_file)
+prediction_data = pd.read_csv(input_file, usecols=['nbo_charge', 'bond_energy', 'Vbur', 'L', 'B1', 'B5'])
+
+prediction_data["Reactant"] = reactant_product["Reactant"]
+prediction_data["product"] = reactant_product["product"]
+prediction_data = prediction_data[['Reactant', 'product', 'nbo_charge', 'bond_energy', 'Vbur', 'L', 'B1', 'B5']]
 
 #set fitting threshold
 threshold = 0.5
 print(f'fitting threshold is {threshold}')
 
 # Output file
-output_file = input_file[:-4] + '_dft_0p5_train.csv'
+output_file = input_file[:-4] + '_dft.csv'
 with open(output_file, 'w') as output_file:
     # Header
     output_file.write("Reactant,product,er_nbo,er_bond,er_vbur,er_l,er_b1,er_b5,average_er,DFTScore\n")
@@ -98,8 +105,8 @@ print(f'valid DFTScore count is {count}.')
 print(f'average DFTScore is {average_dftscore}.')
 
 # Stop the stopwatch / counter
-t1_stop = process_time()
+#t1_stop = process_time()
 
-print("Elapsed time:", t1_stop, t1_start) 
+#print("Elapsed time:", t1_stop, t1_start) 
    
-print("Elapsed time during the whole program in seconds:", t1_stop-t1_start) 
+#print("Elapsed time during the whole program in seconds:", t1_stop-t1_start) 
