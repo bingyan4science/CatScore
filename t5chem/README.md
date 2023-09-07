@@ -2,7 +2,7 @@
 To train a reduced size model, we can specify the model directory
 
 ```
-# one-five layers are removed from the "small" version of Code-T5
+# one-five layers are removed from the "small" variant of Code-T5
 python remove_layers.py --pretrain Salesforce/codet5-small
 
 # from the five-layer-removed model after running the above script, we can further slice down the model
