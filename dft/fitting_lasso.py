@@ -92,7 +92,7 @@ for (reactant, product), group in groups:
                 }
 
 # Save the best models and results dictionary to a file
-best_models_filename = 'best_lasso_models_cross.joblib'
+best_models_filename = 'best_lasso_models.joblib'
 num_models = len(best_models_and_results)
 joblib.dump(best_models_and_results, best_models_filename)
 print(f"{num_models} best models and results saved to {best_models_filename}")
