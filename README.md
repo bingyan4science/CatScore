@@ -91,7 +91,7 @@ cd ${WORKING_DIR}$
 cp example/catdesign.csv path/to/dft/
 cd path/to/dft/
 python fill_dft_values.py catdesign.csv
-python cal_dftscore_train.py catdesign_filled.csv
+python cal_dftscore.py catdesign_filled.csv
 ```
 
 ## Now we can calcualte Spearman correlation: DFTScore-CatScore, DFTScore-round-trip accuracy
