@@ -99,6 +99,6 @@ python cal_dftscore.py catdesign_filled.csv
 cd ${WORKING_DIR}$
 cp example/cattest.csv path/to/dft/
 cd path/to/dft/
-python cal_instance_correlation.py catdesign_filled_dft.csv cattest.csv
+python cal_instance_correlation.py catdesign_filled_dft_lasso.csv cattest.csv
 ```
 
